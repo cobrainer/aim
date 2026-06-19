@@ -79,29 +79,29 @@ class PyInstrumentProfilerMiddleware:
         try:
             await self.app(scope, receive, wrapped_send)
         finally:
-            if skip_profiling:
-                return
+            # NOTE: avoid `return` inside `finally` (it would swallow exceptions
+            # and is a SyntaxWarning on Python 3.14); guard with a conditional.
+            if not skip_profiling:
+                profiler.stop()
 
-            profiler.stop()
+                method = request.method
+                path = request.url.path
+                params = dict(request.query_params)
 
-            method = request.method
-            path = request.url.path
-            params = dict(request.query_params)
+                file_name = '{timestamp}_{method}_{path}'.format(
+                    timestamp=request_time, method=method.lower(), path='_'.join(path.strip('/').split('/')).lower()
+                )
+                request_data = json.dumps({'path': path, 'method': method, 'params': params}, separators=(',', ':'))
 
-            file_name = '{timestamp}_{method}_{path}'.format(
-                timestamp=request_time, method=method.lower(), path='_'.join(path.strip('/').split('/')).lower()
-            )
-            request_data = json.dumps({'path': path, 'method': method, 'params': params}, separators=(',', ':'))
+                # inject request data
+                html_output = profiler.output_html(**self._profiler_kwargs)
+                body_tag = '<body>'
+                body_tag_idx_end = html_output.find(body_tag) + len(body_tag)
+                html_output = (
+                    f'{html_output[:body_tag_idx_end]}'
+                    f'<pre><code>{request_data}</code></pre>'
+                    f'{html_output[body_tag_idx_end:]}'
+                )
 
-            # inject request data
-            html_output = profiler.output_html(**self._profiler_kwargs)
-            body_tag = '<body>'
-            body_tag_idx_end = html_output.find(body_tag) + len(body_tag)
-            html_output = (
-                f'{html_output[:body_tag_idx_end]}'
-                f'<pre><code>{request_data}</code></pre>'
-                f'{html_output[body_tag_idx_end:]}'
-            )
-
-            with open(os.path.join(self._profiler_log_path, f'{file_name}.html'), 'w') as fp:
-                fp.write(html_output)
+                with open(os.path.join(self._profiler_log_path, f'{file_name}.html'), 'w') as fp:
+                    fp.write(html_output)
